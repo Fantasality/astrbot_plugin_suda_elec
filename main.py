@@ -114,6 +114,7 @@ class Main(Star):
             "bind_id": room.get("bind_id"),
             "uid": room.get("uid") or "",
             "threshold": threshold,
+            "alert_sessions": self.store.room_alert_sessions(account_no),
             "balance": latest["balance"] if latest else None,
             "balance_std": latest.get("balance_std") if latest else None,
             "balance_acc": latest.get("balance_acc") if latest else None,
@@ -163,9 +164,11 @@ class Main(Star):
             (f"{prefix}/regions", ["GET"], "校区列表", self._api_regions),
             (f"{prefix}/buildings", ["GET"], "楼栋列表", self._api_buildings),
             (f"{prefix}/rooms", ["GET"], "房间列表", self._api_rooms),
+            (f"{prefix}/sessions", ["GET"], "AstrBot 会话列表（供预警路由选择）", self._api_sessions),
             (f"{prefix}/rooms/add", ["POST"], "添加监控宿舍", self._api_rooms_add),
             (f"{prefix}/rooms/remove", ["POST"], "移除监控宿舍", self._api_rooms_remove),
             (f"{prefix}/rooms/threshold", ["POST"], "单宿舍阈值", self._api_rooms_threshold),
+            (f"{prefix}/rooms/alert", ["POST"], "宿舍预警会话路由", self._api_rooms_alert),
             (f"{prefix}/settings", ["GET", "POST"], "读取/保存预警设置", self._api_settings),
             (f"{prefix}/refresh", ["POST"], "立即轮询", self._api_refresh),
         ]
@@ -315,22 +318,105 @@ class Main(Star):
         except SudaApiError as exc:
             return self._err(str(exc))
 
+    async def _api_sessions(self):
+        """列出 AstrBot 已知会话（unified_msg_origin），供预警路由下拉选择。
+
+        数据源: context.conversation_manager（与 dashboard「会话管理」同源）。
+        """
+        try:
+            convs, _total = await self.context.conversation_manager.get_filtered_conversations(
+                page=1,
+                page_size=500,
+                include_history=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - 旧版本接口兼容
+            logger.debug(f"[苏大电费] get_filtered_conversations 不可用: {exc}")
+            try:
+                convs = await self.context.conversation_manager.get_conversations()
+            except Exception as exc2:  # noqa: BLE001
+                return self._err(f"无法枚举会话: {exc2}")
+        seen = {}
+        for conv in convs:
+            umo = str(getattr(conv, "user_id", "") or "")
+            if not umo:
+                continue
+            if umo in seen:
+                continue
+            parts = umo.split(":")
+            platform = parts[0] if parts else ""
+            mtype = parts[1] if len(parts) > 1 else ""
+            session_id = ":".join(parts[2:]) if len(parts) > 2 else ""
+            title = str(getattr(conv, "title", "") or "").strip()
+            seen[umo] = {
+                "umo": umo,
+                "platform": platform,
+                "message_type": mtype,
+                "session_id": session_id,
+                "title": title,
+                "is_group": "group" in mtype.lower(),
+            }
+        items = sorted(seen.values(), key=lambda x: (not x["is_group"], x["umo"]))
+        return self._ok({"count": len(items), "sessions": list(items)})
+
     async def _api_rooms_remove(self):
         body = await web_request.json(default={}) or {}
         account_no = str(body.get("account_no", "") or "").strip()
         room = self.store.get_room(account_no)
         if not room:
             return self._err("该宿舍不在监控列表中")
+        unbind_errors = []
         uid = room.get("uid")
-        bind_id = room.get("bind_id")
-        if uid and bind_id is not None:
+        # 强制解绑：先刷新该 uid 的最新绑定列表，用最新 bind_id 解绑
+        # （bind_id 可能因平台侧重绑而过期，这正是此前“移除不掉”的原因之一）
+        candidates = []
+        if uid:
+            candidates.append(uid)
+        legacy = self.store.all_uids()[:1]
+        for extra in legacy:
+            if extra not in candidates:
+                candidates.append(extra)
+        for cand_uid in candidates:
+            if not cand_uid:
+                continue
             try:
-                await self.client.unbind_room(uid, bind_id)
+                devices = await self.client.get_devices(cand_uid)
             except SudaApiError as exc:
-                logger.warning(f"[苏大电费] 平台解绑失败（本地仍会移除）: {exc}")
+                unbind_errors.append(str(exc))
+                continue
+            for d in devices:
+                if str(d.get("accountNo") or "") == account_no:
+                    try:
+                        await self.client.unbind_room(cand_uid, d.get("id"))
+                    except SudaApiError as exc:
+                        unbind_errors.append(str(exc))
+            # 兜底：用本地记录的 bind_id 再试一次
+            bind_id = room.get("bind_id")
+            if bind_id is not None:
+                still = next(
+                    (d for d in devices if str(d.get("id")) == str(bind_id)), None
+                )
+                if still is not None:
+                    try:
+                        await self.client.unbind_room(cand_uid, bind_id)
+                    except SudaApiError as exc:
+                        unbind_errors.append(str(exc))
         self.store.remove_room(account_no)
         await self.store.save_state()
-        return self._ok({"removed": account_no})
+        return self._ok({"removed": account_no, "unbind_errors": unbind_errors[:3]})
+
+    async def _api_rooms_alert(self):
+        """设置宿舍专属预警会话路由（空列表 = 跟随全局默认）。"""
+        body = await web_request.json(default={}) or {}
+        account_no = str(body.get("account_no", "") or "").strip()
+        room = self.store.get_room(account_no)
+        if not room:
+            return self._err("该宿舍不在监控列表中")
+        sessions = body.get("alert_sessions")
+        if not isinstance(sessions, list):
+            return self._err("alert_sessions 必须是字符串数组")
+        self.store.set_room_alert_sessions(account_no, [str(s) for s in sessions])
+        await self.store.save_state()
+        return self._ok(self._room_snapshot(self.store.get_room(account_no)))
 
     async def _api_rooms_threshold(self):
         body = await web_request.json(default={}) or {}

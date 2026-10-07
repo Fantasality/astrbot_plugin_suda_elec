@@ -227,7 +227,9 @@ class Monitor:
 
         template = str(self._cfg("alert_template", "") or DEFAULT_TEMPLATE)
         message = self._render_template(template, info, threshold)
-        sessions = self._alert_sessions()
+        # 会话路由：房间专属（一对多）优先，否则跟随全局（多对一）
+        room_sessions = store.room_alert_sessions(account_no)
+        sessions = room_sessions if room_sessions else self._alert_sessions()
         delivered = []
         for session in sessions:
             try:

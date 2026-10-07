@@ -184,7 +184,41 @@
     padding: 10px 14px; font-size: 13px; color: var(--text); line-height: 1.6;
   }
   #banner code { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
-  #banner .close { position: absolute; top: 6px; right: 8px; border: none; background: none; cursor: pointer; font-size: 14px; color: var(--text-sub); padding: 2px 6px; }  .toast {
+  #banner .close { position: absolute; top: 6px; right: 8px; border: none; background: none; cursor: pointer; font-size: 14px; color: var(--text-sub); padding: 2px 6px; }
+
+  /* 会话选择弹窗 */
+  #modalMask {
+    display: none; position: fixed; inset: 0; z-index: 50;
+    background: rgba(0, 0, 0, .45); backdrop-filter: blur(2px);
+    align-items: center; justify-content: center; padding: 20px;
+  }
+  #modalMask.show { display: flex; }
+  #modal {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: var(--shadow); width: 100%; max-width: 560px; max-height: 80vh;
+    display: flex; flex-direction: column; animation: rise .3s cubic-bezier(.22, 1, .36, 1);
+  }
+  #modal header { padding: 14px 16px 8px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  #modal .sub { padding: 0 16px 10px; font-size: 12px; color: var(--text-sub); }
+  #modal .body { overflow: auto; padding: 4px 16px; flex: 1; min-height: 80px; }
+  .sess-item {
+    display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin: 4px 0;
+    border: 1px solid var(--border); border-radius: 8px; cursor: pointer; transition: all .15s;
+  }
+  .sess-item:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .sess-item input { flex: none; }
+  .sess-item .lab { flex: 1; min-width: 0; }
+  .sess-item .lab .t { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sess-item .lab .u { font-size: 11px; color: var(--text-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sess-item .tag { flex: none; font-size: 11px; padding: 1px 7px; border-radius: 999px; }
+  .sess-item .tag.group { background: var(--good-soft); color: var(--good); }
+  .sess-item .tag.private { background: var(--accent-soft); color: var(--accent); }
+  .sess-item .tag.webchat { background: var(--warn-soft); color: var(--warn); }
+  #modal footer { padding: 12px 16px; display: flex; gap: 10px; justify-content: flex-end; border-top: 1px solid var(--border); }
+  .sess-empty { text-align: center; color: var(--text-sub); font-size: 13px; padding: 24px 0; }
+  .route-badge { cursor: pointer; border: 1px solid var(--border); border-radius: 999px; padding: 1px 9px; font-size: 11px; transition: all .15s; }
+  .route-badge:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-confirm-step { background: var(--bad) !important; color: #fff !important; border-color: var(--bad) !important; }  .toast {
     background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--accent);
     box-shadow: var(--shadow); border-radius: 8px; padding: 9px 14px; font-size: 13px;
     animation: slideIn .3s cubic-bezier(.22, 1, .36, 1) both; max-width: 320px;
@@ -274,8 +308,11 @@
         </div>
       </div>
       <div class="field" style="grid-column: 1 / -1;">
-        <label>预警会话（unified_msg_origin，逗号分隔；在聊天里发 /elec alert here 可一键添加）</label>
-        <input type="text" id="cfgSessions" placeholder="例如 aiocqio:GroupMessage:123456789">
+        <label>全局预警会话（unified_msg_origin，可多选；建议点右侧按钮从会话列表勾选）</label>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="cfgSessions" placeholder="例如 aiocqio:GroupMessage:123456789" style="flex:1;">
+          <button type="button" id="btnPickSessions">📋 从会话选择</button>
+        </div>
       </div>
       <div class="field" style="grid-column: 1 / -1;">
         <label>预警消息模板</label>
@@ -286,6 +323,19 @@
     <div class="settings-actions">
       <button class="primary" id="btnSaveSettings">保存设置</button>
       <span class="count-note">保存后立即生效，无需重启。</span>
+    </div>
+  </div>
+
+  <div id="modalMask">
+    <div id="modal">
+      <header id="modalTitle">选择预警接收会话</header>
+      <div class="sub" id="modalSub">勾选该宿舍的预警发送目标（一对多）；不勾选则跟随全局默认（多对一）。</div>
+      <div class="body" id="modalBody"></div>
+      <footer>
+        <button id="modalClear">清空选择（跟随全局）</button>
+        <button class="primary" id="modalSave">保存</button>
+        <button id="modalCancel">取消</button>
+      </footer>
     </div>
   </div>
 
@@ -303,6 +353,8 @@
     currentRoom: null,  // 当前大图宿舍
     rangeHours: 168,
     anim: {},           // chart 动画句柄
+    sessions: [],       // AstrBot 会话缓存（预警路由选择用）
+    routeTarget: null,  // 当前正在配置路由的宿舍 account_no（null=全局模式）
   };
 
   var PLUGIN = "astrbot_plugin_suda_elec";
@@ -437,6 +489,7 @@
         }
       }
       var low = snap.balance !== null && snap.balance < snap.threshold;
+      var routeCount = (snap.alert_sessions || []).length;
       card.innerHTML =
         '<div class="actions">' +
           '<button data-act="view">曲线</button>' +
@@ -450,6 +503,7 @@
         '<canvas class="spark"></canvas>' +
         '<div class="meta">' +
           '<span class="th-edit">阈值 ¥<input class="th" type="number" step="0.1" value="' + snap.threshold + '"></span>' +
+          '<span class="route-badge" data-act="route" title="设置该宿舍的预警接收会话">🔔 ' + (routeCount ? routeCount + " 个会话" : "跟随全局") + '</span>' +
           '<span>' + fmtTime(snap.last_ts) + '</span>' +
         '</div>';
       grid.appendChild(card);
@@ -467,11 +521,32 @@
         $("roomSelect").value = snap.account_no;
         selectRoom(snap.account_no, true);
       };
-      card.querySelector('[data-act="del"]').onclick = function () {
-        if (!confirm("确定移除 " + snap.location + " 的监控？")) return;
+      // 两步确认移除（iframe 沙箱可能禁用 confirm()，故不用原生弹窗）
+      var delBtn = card.querySelector('[data-act="del"]');
+      delBtn.onclick = function () {
+        if (!delBtn.classList.contains("btn-confirm-step")) {
+          delBtn.classList.add("btn-confirm-step");
+          delBtn.textContent = "确认移除?";
+          setTimeout(function () {
+            if (delBtn.isConnected) {
+              delBtn.classList.remove("btn-confirm-step");
+              delBtn.textContent = "移除";
+            }
+          }, 4000);
+          return;
+        }
+        delBtn.disabled = true;
         apiPost("rooms/remove", { account_no: snap.account_no })
-          .then(function () { toast("已移除 " + snap.location, "ok"); loadOverview(); })
-          .catch(function (e) { toast("移除失败：" + e.message, "err"); });
+          .then(function (r) {
+            var errs = (r && r.unbind_errors) || [];
+            toast("已移除 " + snap.location + (errs.length ? "（平台解绑告警: " + errs[0] + "）" : ""), errs.length ? "" : "ok");
+            loadOverview();
+          })
+          .catch(function (e) { toast("移除失败：" + e.message, "err"); })
+          .finally(function () { delBtn.disabled = false; });
+      };
+      card.querySelector('[data-act="route"]').onclick = function () {
+        openRouteModal(snap);
       };
       card.querySelector(".th").onchange = function (ev) {
         var v = parseFloat(ev.target.value);
@@ -887,6 +962,7 @@
       .catch(function (e) { toast("保存失败：" + e.message, "err"); });
   };
 
+  $("btnPickSessions").onclick = function () { openRouteModal(null); };
   $("btnRefresh").onclick = function () {
     var btn = this;
     btn.disabled = true;
@@ -910,6 +986,93 @@
       if (state.currentRoom) selectRoom(state.currentRoom, false);
     };
   });
+
+  /* ============================== 会话选择弹窗 ============================== */
+
+  function loadSessions() {
+    return apiGet("sessions").then(function (data) {
+      state.sessions = (data && data.sessions) || [];
+      return state.sessions;
+    }).catch(function () { state.sessions = []; return []; });
+  }
+
+  function sessLabel(s) {
+    var bits = [];
+    if (s.title) bits.push(s.title);
+    if (s.is_group && s.session_id) bits.push("群 " + s.session_id);
+    else if (s.session_id) bits.push(s.session_id);
+    return bits.join(" · ") || s.umo;
+  }
+
+  function renderSessionList(selectedSet) {
+    var body = $("modalBody");
+    body.innerHTML = "";
+    if (!state.sessions.length) {
+      body.innerHTML = '<div class="sess-empty">AstrBot 暂无会话记录。<br>机器人收到过消息的群/私聊会出现在这里。</div>';
+      return;
+    }
+    state.sessions.forEach(function (s) {
+      var row = document.createElement("label");
+      row.className = "sess-item";
+      var checked = selectedSet.has(s.umo) ? " checked" : "";
+      var tagCls = s.is_group ? "group" : (s.platform === "webchat" ? "webchat" : "private");
+      var tagText = s.is_group ? "群聊" : (s.platform === "webchat" ? "网页" : "私聊");
+      row.innerHTML =
+        '<input type="checkbox" value="' + s.umo.replace(/"/g, "&quot;") + '"' + checked + '>' +
+        '<span class="lab"><span class="t">' + sessLabel(s) + '</span>' +
+        '<span class="u">' + s.umo + '</span></span>' +
+        '<span class="tag ' + tagCls + '">' + tagText + "</span>";
+      body.appendChild(row);
+    });
+  }
+
+  function openRouteModal(snap) {
+    state.routeTarget = snap ? snap.account_no : null;
+    var selected = new Set(snap ? (snap.alert_sessions || []) :
+      ($("cfgSessions").value || "").split(",").map(function (x) { return x.trim(); }).filter(Boolean));
+    $("modalTitle").textContent = snap
+      ? "预警路由 · " + (snap.location || snap.account_no)
+      : "选择全局预警接收会话";
+    renderSessionList(selected);
+    $("modalMask").classList.add("show");
+  }
+
+  function closeRouteModal() {
+    $("modalMask").classList.remove("show");
+    state.routeTarget = null;
+  }
+
+  function collectModalSelection() {
+    var out = [];
+    document.querySelectorAll("#modalBody input[type=checkbox]:checked").forEach(function (cb) {
+      out.push(cb.value);
+    });
+    return out;
+  }
+
+  $("modalCancel").onclick = closeRouteModal;
+  $("modalMask").addEventListener("click", function (e) {
+    if (e.target === $("modalMask")) closeRouteModal();
+  });
+  $("modalClear").onclick = function () {
+    document.querySelectorAll("#modalBody input[type=checkbox]").forEach(function (cb) { cb.checked = false; });
+  };
+  $("modalSave").onclick = function () {
+    var picked = collectModalSelection();
+    if (state.routeTarget) {
+      apiPost("rooms/alert", { account_no: state.routeTarget, alert_sessions: picked })
+        .then(function () {
+          toast(picked.length ? "路由已保存：" + picked.length + " 个会话" : "已清空路由，跟随全局默认", "ok");
+          closeRouteModal();
+          loadOverview();
+        })
+        .catch(function (e) { toast("保存失败：" + e.message, "err"); });
+    } else {
+      $("cfgSessions").value = picked.join(",");
+      closeRouteModal();
+      toast("已写入全局设置，记得点「保存设置」", "ok");
+    }
+  };
 
   /* ============================== 主流程 ============================== */
 
@@ -978,6 +1141,11 @@
       ? Promise.resolve(initialOverview)
       : loadOverview();
     chain.then(function () { loadRegions(); });
+    loadSessions().then(function (sessions) {
+      if (!sessions.length) {
+        showBanner("ℹ️ AstrBot 暂无会话记录，预警路由选择列表为空。机器人收到过消息后这里就会出现群/私聊列表。");
+      }
+    });
     setInterval(function () { loadOverview(); }, 60000);
   }
 

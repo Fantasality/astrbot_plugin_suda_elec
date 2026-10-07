@@ -163,6 +163,7 @@ class Store:
         bind_id=None,
         threshold: float | None = None,
         uid: str | None = None,
+        alert_sessions: list[str] | None = None,
     ) -> dict:
         rooms = self.state.setdefault("rooms", {})
         key = str(account_no)
@@ -181,6 +182,8 @@ class Store:
             info["threshold"] = float(threshold)
         if uid:
             info["uid"] = uid
+        if alert_sessions is not None:
+            info["alert_sessions"] = list(alert_sessions)
         rooms[key] = info
         return dict(info, account_no=key)
 
@@ -203,6 +206,19 @@ class Store:
         except (TypeError, ValueError):
             pass
         return float(global_threshold)
+
+    def room_alert_sessions(self, account_no: str) -> list[str]:
+        """房间专属预警会话（空 = 跟随全局）。"""
+        info = (self.state.get("rooms") or {}).get(str(account_no)) or {}
+        raw = info.get("alert_sessions") or []
+        if isinstance(raw, str):
+            raw = raw.replace("，", ",").split(",")
+        return [s.strip() for s in raw if s and s.strip()]
+
+    def set_room_alert_sessions(self, account_no: str, sessions: list[str]) -> None:
+        """设置房间专属预警会话；空列表 = 跟随全局默认。"""
+        clean = [s.strip() for s in (sessions or []) if s and s.strip()]
+        self.upsert_room(account_no, alert_sessions=clean)
 
     # ------------------------------------------------------------- 记录
 
