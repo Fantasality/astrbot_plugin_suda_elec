@@ -1,4 +1,4 @@
-"""定时轮询与低额预警。"""
+"""定时轮询与低额预警（v2：多虚拟账号架构）。"""
 
 from __future__ import annotations
 
@@ -15,13 +15,12 @@ DEFAULT_TEMPLATE = (
 
 
 class Monitor:
-    """周期性查询所有挂载宿舍的余额，落盘记录并按阈值触发预警。"""
+    """周期性查询所有挂载宿舍的余额，落盘记录并按阈值触发预警。
+
+    平台限制一个账号只能绑定一个房间，因此轮询时逐房间使用其专属 uid 查询。
+    """
 
     def __init__(self, plugin) -> None:
-        """
-        Args:
-            plugin: Main 插件实例（需要 .store / .client / .config / .context / .logger）。
-        """
         self.plugin = plugin
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
@@ -54,6 +53,7 @@ class Monitor:
     def start(self) -> None:
         if self._task is None or self._task.done():
             self._stop.clear()
+            self._manual_wake.clear()
             self._task = asyncio.create_task(self._run(), name="suda-elec-monitor")
 
     async def stop(self) -> None:
@@ -73,7 +73,6 @@ class Monitor:
     # ------------------------------------------------------------- 主循环
 
     async def _run(self) -> None:
-        # 启动后稍等片刻，先跑第一次查询
         await asyncio.sleep(3)
         while not self._stop.is_set():
             try:
@@ -84,11 +83,8 @@ class Monitor:
                 self.last_error = str(exc)
                 if self.plugin.logger:
                     self.plugin.logger.error(f"[苏大电费] 轮询异常: {exc}")
-            wait = self._interval_seconds()
             try:
-                await asyncio.wait_for(
-                    self._stop.wait() if False else self._wait_any(), timeout=wait
-                )
+                await asyncio.wait_for(self._wait_any(), timeout=self._interval_seconds())
             except asyncio.TimeoutError:
                 pass
 
@@ -108,47 +104,58 @@ class Monitor:
     # ------------------------------------------------------------- 单次轮询
 
     async def poll_once(self) -> dict:
-        """查询全部挂载宿舍 → 写记录 → 阈值检查 → 发预警。返回本次摘要。"""
+        """逐房间查询 → 写记录 → 阈值检查 → 发预警。返回本次摘要。"""
         store = self.plugin.store
+        client: SudaClient = self.plugin.client
         rooms = store.list_rooms()
         summary = {"polled": 0, "rooms": [], "alerts": []}
+        self.last_poll_ts = time.time()
         if not rooms:
-            self.last_poll_ts = time.time()
             self.last_poll_ok = True
+            self.last_error = ""
+            await store.save_state()
+            await store.save_records()
             return summary
 
-        client: SudaClient = self.plugin.client
-        try:
-            devices = await client.get_devices()
-        except SudaApiError as exc:
-            self.last_poll_ts = time.time()
-            self.last_poll_ok = False
-            self.last_error = str(exc)
-            raise
-
-        self.last_poll_ts = time.time()
-        self.last_poll_ok = True
-        self.last_error = ""
-
-        by_account = {str(d.get("accountNo") or d.get("roomdm") or ""): d for d in devices}
+        had_error = False
         max_records = int(self._cfg("max_records_per_room", 2000) or 2000)
 
-        for room in rooms:
+        for i, room in enumerate(rooms):
             account_no = room["account_no"]
-            dev = by_account.get(account_no)
-            if dev is None:
-                # 绑定关系可能被平台清理，尝试补绑
+            uid = room.get("uid") or store.allocate_uid()
+            if i:
+                await asyncio.sleep(0.8)  # 对平台友好：房间间小间隔
+            try:
+                devices = await client.get_devices(uid)
+            except SudaApiError as exc:
+                had_error = True
+                self.last_error = str(exc)
                 summary["rooms"].append(
-                    {"account_no": account_no, "status": "missing"}
+                    {"account_no": account_no, "status": "error", "error": str(exc)}
                 )
-                await self._try_rebind(account_no)
+                if self.plugin.logger:
+                    self.plugin.logger.warning(
+                        f"[苏大电费] 房间 {account_no} 查询失败: {exc}"
+                    )
                 continue
+
+            dev = next(
+                (d for d in devices if str(d.get("accountNo") or "") == account_no),
+                None,
+            )
+            if dev is None:
+                # uid 上没有这个房间的绑定（可能被平台清理），补绑
+                summary["rooms"].append({"account_no": account_no, "status": "missing"})
+                await self._try_rebind(uid, account_no)
+                continue
+
             info = client.summarize_device(dev)
             store.upsert_room(
                 account_no,
                 name=info["room_name"],
                 location=info["location"],
                 bind_id=info["bind_id"],
+                uid=uid,
             )
             store.append_record(
                 account_no,
@@ -160,11 +167,7 @@ class Monitor:
             )
             summary["polled"] += 1
             summary["rooms"].append(
-                {
-                    "account_no": account_no,
-                    "status": "ok",
-                    "balance": info["balance"],
-                }
+                {"account_no": account_no, "status": "ok", "balance": info["balance"]}
             )
             alert = await self._check_threshold(account_no, info)
             if alert:
@@ -172,14 +175,17 @@ class Monitor:
 
         await store.save_state()
         await store.save_records()
+        self.last_poll_ok = not had_error
+        if not had_error:
+            self.last_error = ""
         return summary
 
-    async def _try_rebind(self, account_no: str) -> None:
+    async def _try_rebind(self, uid: str, account_no: str) -> None:
         client: SudaClient = self.plugin.client
         try:
-            ok = await client.bind_room(account_no)
+            ok = await client.bind_room(uid, account_no)
             if ok:
-                devices = await client.get_devices()
+                devices = await client.get_devices(uid)
                 for d in devices:
                     if str(d.get("accountNo") or "") == account_no:
                         info = client.summarize_device(d)
@@ -188,6 +194,7 @@ class Monitor:
                             name=info["room_name"],
                             location=info["location"],
                             bind_id=info["bind_id"],
+                            uid=uid,
                         )
                         break
         except SudaApiError as exc:
@@ -267,5 +274,8 @@ class Monitor:
         )
 
     def _alert_sessions(self) -> list[str]:
-        raw = str(self._cfg("alert_sessions", "") or "")
+        """预警会话：store 为唯一事实来源，config 作为兼容回退。"""
+        raw = self.plugin.store.get_alert_sessions()
+        if not raw:
+            raw = str(self._cfg("alert_sessions", "") or "")
         return [s.strip() for s in raw.replace("，", ",").split(",") if s.strip()]

@@ -236,13 +236,19 @@
 
   <div class="card">
     <h2>➕ 添加宿舍 <span class="hint">免登录：直接从平台公开接口选择任意房间</span></h2>
-    <div class="add-grid">
+    <div class="add-grid" style="grid-template-columns: 1fr 1fr 1fr auto auto;">
       <select class="picker" id="regionSel"><option value="">加载校区中…</option></select>
       <select class="picker" id="buildingSel"><option value="">请先选择校区</option></select>
       <select class="picker" id="roomSel"><option value="">请先选择楼栋</option></select>
-      <button class="primary" id="btnAdd">添加监控</button>
+      <button class="primary" id="btnAdd">＋ 添加监控</button>
+      <button id="btnQuick">⚡ 查余额</button>
     </div>
-    <div class="add-tip">添加后插件会自动在虚拟账号下绑定该房间并立即查询一次。可以添加任意多个宿舍（本楼 / 女朋友宿舍 / 整层都可以 😎）。</div>
+    <div id="quickResult" style="display:none; margin-top:12px;" class="room">
+      <div class="loc" id="quickLoc">—</div>
+      <div class="row"><span class="balance">¥<span class="num" id="quickNum">--</span></span><span id="quickBadge"></span></div>
+      <div class="meta"><span>快速查询（临时凭据，不会加入监控）</span><span id="quickTime"></span></div>
+    </div>
+    <div class="add-tip">「⚡ 查余额」立即查询不占监控名额；「＋ 添加监控」加入定时轮询和低额预警。可以添加任意多个宿舍（平台限制一个账号绑一房间，插件会自动为每间宿舍分配独立虚拟账号）。</div>
   </div>
 
   <div class="card">
@@ -825,6 +831,32 @@
       })
       .catch(function (e) { toast("添加失败：" + e.message, "err"); })
       .finally(function () { btn.disabled = false; });
+  };
+  $("btnQuick").onclick = function () {
+    var roomSel = $("roomSel");
+    var accountNo = roomSel.value;
+    if (!accountNo) { toast("请先选择到具体房间", "err"); return; }
+    var roomName = roomSel.options[roomSel.selectedIndex].textContent;
+    var bSel = $("buildingSel"), rSel = $("regionSel");
+    var loc = (rSel.options[rSel.selectedIndex] || {}).textContent + " " +
+              ((bSel.options[bSel.selectedIndex] || {}).textContent || "") + " " + roomName;
+    var btn = this;
+    btn.disabled = true;
+    btn.textContent = "查询中…";
+    apiGet("quick_balance", { account_no: accountNo })
+      .then(function (info) {
+        var box = $("quickResult");
+        box.style.display = "block";
+        box.style.animation = "none"; void box.offsetWidth; box.style.animation = "";
+        $("quickLoc").textContent = loc.trim() + "（" + accountNo + "）";
+        animateNumber($("quickNum"), info.balance);
+        $("quickBadge").innerHTML = info.balance !== null && info.balance !== undefined
+          ? '<span class="delta ' + (info.balance < 0 ? "down" : "up") + '">' + (info.balance < 0 ? "⚠️ 已欠费" : "余额正常") + '</span>'
+          : '<span class="delta flat">暂无数据</span>';
+        $("quickTime").textContent = new Date().toLocaleTimeString();
+      })
+      .catch(function (e) { toast("查询失败：" + e.message, "err"); })
+      .finally(function () { btn.disabled = false; btn.textContent = "⚡ 查余额"; });
   };
 
   /* ============================== 设置 ============================== */

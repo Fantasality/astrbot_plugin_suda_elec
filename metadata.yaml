@@ -33,7 +33,7 @@ desc: |-
     个人统一身份认证凭据；
   - 全部数据（记录/配置）保存在 AstrBot 数据目录 `plugin_data/astrbot_plugin_suda_elec/` 下。
 author: Fantasality
-version: 1.0.1
+version: 1.2.0
 repo: https://github.com/Fantasality/astrbot_plugin_suda_elec
 astrbot_version: ">=4.16.0"
 tags:

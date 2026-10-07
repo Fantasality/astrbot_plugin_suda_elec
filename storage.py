@@ -2,8 +2,11 @@
 
 文件布局（AstrBot 插件数据目录 plugin_data/astrbot_plugin_suda_elec/ 下）：
 
-- ``state.json``   监控配置：虚拟账号、房间清单（含单宿舍阈值覆盖）、预警状态
+- ``state.json``   监控配置：虚拟账号池、房间清单（每房间一个 uid）、预警配置与状态
 - ``records.json`` 余额历史：``{account_no: [{ts, balance, balance_std, balance_acc, is_normal}]}``
+
+平台限制：一个账号（userId）只能绑定一个房间。因此每间宿舍分配一个独立虚拟
+账号 uid，账号池可回收复用（解绑后 uid 可再次投喂给新房间）。
 
 所有写入均为「写临时文件 + os.replace」的原子操作，避免断电/崩溃导致数据损坏。
 """
@@ -15,6 +18,8 @@ import json
 import os
 import time
 from pathlib import Path
+
+from .suda_api import generate_virtual_user_id
 
 
 def _atomic_write_json(path: Path, data) -> None:
@@ -36,15 +41,18 @@ class Store:
 
         self.state: dict = self._load(self.state_path, self._default_state())
         self.records: dict[str, list[dict]] = self._load(self.records_path, {})
+        self._migrate()
 
     # ------------------------------------------------------------- 默认结构
 
     @staticmethod
     def _default_state() -> dict:
         return {
-            "monitor_user_id": "",
-            "rooms": {},  # account_no -> {name, location, bind_id, threshold, added_at}
-            "alert_state": {},  # account_no -> {"last_alert_ts": float, "last_balance": float}
+            "monitor_user_id": "",       # 兼容保留：首个虚拟账号
+            "uid_pool": [],              # 已创建的全部虚拟账号（含空闲的）
+            "rooms": {},                 # account_no -> {name, location, bind_id, threshold, added_at, uid}
+            "alert_state": {},           # account_no -> {"last_alert_ts": float, ...}
+            "alert_sessions": "",        # 预警会话列表（逗号分隔），store 为唯一事实来源
         }
 
     @staticmethod
@@ -58,6 +66,31 @@ class Store:
             pass
         return default
 
+    def _migrate(self) -> None:
+        """旧版本 state 兼容：房间缺 uid 时补分配（首个复用 monitor_user_id）。"""
+        changed = False
+        rooms = self.state.setdefault("rooms", {})
+        pool = self.state.setdefault("uid_pool", [])
+        legacy_uid = str(self.state.get("monitor_user_id") or "")
+        first_done = False
+        for info in rooms.values():
+            if not info.get("uid"):
+                if not first_done and legacy_uid:
+                    info["uid"] = legacy_uid
+                else:
+                    info["uid"] = generate_virtual_user_id()
+                    pool.append(info["uid"])
+                first_done = True
+                changed = True
+        if legacy_uid and legacy_uid not in pool:
+            pool.insert(0, legacy_uid)
+            changed = True
+        if not isinstance(self.state.get("alert_sessions"), str):
+            self.state["alert_sessions"] = ""
+            changed = True
+        if changed and self._logger:
+            self._logger.info("[苏大电费] state.json 已迁移到多账号账号池结构")
+
     # ------------------------------------------------------------- 持久化
 
     async def save_state(self) -> None:
@@ -68,13 +101,21 @@ class Store:
         async with self._lock:
             _atomic_write_json(self.records_path, self.records)
 
-    # ------------------------------------------------------------- 虚拟账号
+    # ------------------------------------------------------------- 账号池
 
-    def get_monitor_user_id(self) -> str:
-        return str(self.state.get("monitor_user_id") or "")
+    def allocate_uid(self) -> str:
+        """分配一个空闲虚拟账号：优先复用未被任何房间引用的池内账号。"""
+        pool = self.state.setdefault("uid_pool", [])
+        used = {info.get("uid") for info in (self.state.get("rooms") or {}).values()}
+        for uid in pool:
+            if uid not in used:
+                return uid
+        uid = generate_virtual_user_id()
+        pool.append(uid)
+        return uid
 
-    def set_monitor_user_id(self, user_id: str) -> None:
-        self.state["monitor_user_id"] = user_id
+    def all_uids(self) -> list[str]:
+        return list(self.state.setdefault("uid_pool", []))
 
     # ------------------------------------------------------------- 房间管理
 
@@ -97,6 +138,22 @@ class Store:
         item["account_no"] = str(account_no)
         return item
 
+    def find_room_by_keyword(self, keyword: str) -> dict | None:
+        """按账号号或名称/位置关键词查找房间。"""
+        kw = (keyword or "").strip()
+        if not kw:
+            return None
+        rooms = self.list_rooms()
+        for room in rooms:
+            if room["account_no"] == kw:
+                return room
+        lowered = kw.lower()
+        for room in rooms:
+            hay = f"{room.get('name', '')} {room.get('location', '')}".lower()
+            if lowered in hay:
+                return room
+        return None
+
     def upsert_room(
         self,
         account_no: str,
@@ -105,6 +162,7 @@ class Store:
         location: str = "",
         bind_id=None,
         threshold: float | None = None,
+        uid: str | None = None,
     ) -> dict:
         rooms = self.state.setdefault("rooms", {})
         key = str(account_no)
@@ -121,6 +179,8 @@ class Store:
             info["bind_id"] = bind_id
         if threshold is not None:
             info["threshold"] = float(threshold)
+        if uid:
+            info["uid"] = uid
         rooms[key] = info
         return dict(info, account_no=key)
 
@@ -131,6 +191,7 @@ class Store:
             rooms.pop(key, None)
             self.state.get("alert_state", {}).pop(key, None)
             self.records.pop(key, None)
+            # uid 保留在池中复用
             return True
         return False
 
@@ -175,7 +236,16 @@ class Store:
             return history[-limit:]
         return list(history)
 
-    # ------------------------------------------------------------- 预警状态
+    def get_records_since(self, account_no: str, since_ts: float) -> list[dict]:
+        return [r for r in (self.records.get(str(account_no)) or []) if r.get("ts", 0) >= since_ts]
+
+    # ------------------------------------------------------------- 预警配置/状态
+
+    def get_alert_sessions(self) -> str:
+        return str(self.state.get("alert_sessions") or "")
+
+    def set_alert_sessions(self, value: str) -> None:
+        self.state["alert_sessions"] = str(value or "")
 
     def get_alert_state(self, account_no: str) -> dict:
         return dict((self.state.get("alert_state") or {}).get(str(account_no)) or {})

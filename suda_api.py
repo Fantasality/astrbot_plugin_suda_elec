@@ -1,4 +1,4 @@
-"""苏州大学宿舍水电缴费平台 API 客户端（免认证方案）。
+"""苏州大学宿舍水电缴费平台 API 客户端（免认证方案 v2）。
 
 逆向自 https://ny.hq.suda.edu.cn/prepaid/ 前端（uni-app）：
 
@@ -7,16 +7,16 @@
   仅标识接入端，不标识用户身份）；
 - 用户态: 业务参数里携带 ``userId``（openId 形态）。服务端不校验 userId 的真实性，
   因此插件可以使用自生成虚拟账号完成 绑定房间 / 查询余额，完全跳过统一身份认证；
+- **平台限制: 每个账号（userId）只能绑定一个房间**（多绑返回 code=-1
+  "只能绑定一个房间"）。因此多宿舍监控 = 每间宿舍一个独立虚拟账号，由插件侧
+  账号池管理；
 - 响应包裹: ``{"code": "0", "msg": "...", "data": ...}``，code != "0" 视为业务错误。
-
-所有方法均为协程，线程安全由调用方（asyncio 事件循环）保证。
 """
 
 from __future__ import annotations
 
 import asyncio
 import secrets
-import time
 from typing import Any
 
 import aiohttp
@@ -35,6 +35,8 @@ _DEVICE_TOKEN = (
 
 _RECHARGE = "/v2/wechat/szdx/rechargeApp"
 
+ERR_ONLY_ONE_ROOM = "只能绑定一个房间"
+
 
 class SudaApiError(Exception):
     """苏大平台业务错误（code != 0）或网络异常。"""
@@ -46,18 +48,20 @@ def generate_virtual_user_id() -> str:
 
 
 class SudaClient:
-    """苏大宿舍电费平台客户端（免统一身份认证）。"""
+    """苏大宿舍电费平台客户端（免统一身份认证，支持多虚拟账号）。
+
+    v2: 平台限制一个账号只能绑定一个房间，因此所有绑定/查询方法都显式
+    接收 ``uid``（虚拟账号），由上层（storage/monitor）负责账号池分配。
+    """
 
     def __init__(
         self,
-        user_id: str,
         *,
         timeout_seconds: float = 15.0,
         retries: int = 2,
         verify_ssl: bool = True,
         logger=None,
     ) -> None:
-        self.user_id = user_id
         self._timeout = aiohttp.ClientTimeout(total=timeout_seconds)
         self._retries = max(0, retries)
         self._verify_ssl = verify_ssl
@@ -145,36 +149,67 @@ class SudaClient:
 
     # ------------------------------------------------------------- 绑定与查询
 
-    async def bind_room(self, account_no: str) -> bool:
-        """把房间绑定到虚拟账号下（等同官方 App 的“绑定设备”）。"""
+    async def bind_room(self, uid: str, account_no: str) -> bool:
+        """把房间绑定到指定虚拟账号下。一个 uid 只能绑定一个房间。"""
         data = await self._post(
             f"{_RECHARGE}/saveUserAccount",
-            {"accountNo": str(account_no), "userId": self.user_id},
+            {"accountNo": str(account_no), "userId": uid},
         )
         return bool(data)
 
-    async def unbind_room(self, bind_id) -> bool:
+    async def unbind_room(self, uid: str, bind_id) -> bool:
         """解除绑定。bind_id 为 get_devices 返回的绑定记录 id（非 accountNo）。"""
-        data = await self._post(f"{_RECHARGE}/deleteUserAccount", {"id": bind_id})
+        data = await self._post(
+            f"{_RECHARGE}/deleteUserAccount", {"id": bind_id, "userId": uid}
+        )
         return bool(data)
 
-    async def get_devices(self) -> list[dict]:
-        """查询虚拟账号绑定的全部房间（含最新余额），一次请求返回所有宿舍。
+    async def get_devices(self, uid: str) -> list[dict]:
+        """查询指定虚拟账号绑定的房间（含最新余额）。
 
+        单账号最多一个房间，返回 0 或 1 项。
         每项包含: id(绑定记录id) / accountNo / roomName / buildName / location /
         jeSum(当前余额) / sybzje / sylje / isNormal / tip 等。
         """
-        data = await self._post(f"{_RECHARGE}/getMyBandDev", {"userId": self.user_id})
+        data = await self._post(f"{_RECHARGE}/getMyBandDev", {"userId": uid})
         return data or []
 
-    async def get_user_info(self) -> dict | None:
-        """虚拟账号信息（一般无更多内容，保留用于连通性探测）。"""
+    async def quick_balance(self, account_no: str) -> dict:
+        """免留存查询任意房间当前余额：临时账号绑定 → 查询 → 立即解绑。"""
+        uid = generate_virtual_user_id()
+        await self.bind_room(uid, account_no)
         try:
-            return await self._get(
-                f"{_RECHARGE}/getUserInfo", {"userId": self.user_id}
-            )
+            devices = await self.get_devices(uid)
         except SudaApiError:
-            return None
+            await self._try_unbind_all(uid)
+            raise
+        info = None
+        for d in devices:
+            if str(d.get("accountNo") or "") == str(account_no):
+                info = self.summarize_device(d)
+                break
+        if info is None:
+            info = {"account_no": str(account_no), "balance": None}
+        ok = False
+        try:
+            if info.get("bind_id") is not None:
+                ok = await self.unbind_room(uid, info["bind_id"])
+        except SudaApiError:
+            ok = False
+        if not ok:
+            # 解绑失败兜底：再试一次全部清理
+            await self._try_unbind_all(uid)
+        return info
+
+    async def _try_unbind_all(self, uid: str) -> None:
+        try:
+            for d in await self.get_devices(uid):
+                try:
+                    await self.unbind_room(uid, d.get("id"))
+                except SudaApiError:
+                    pass
+        except SudaApiError:
+            pass
 
     # ------------------------------------------------------------- 工具
 
@@ -197,6 +232,109 @@ class SudaClient:
             "tip": dev.get("tip"),
         }
 
+    @staticmethod
+    async def resolve_room(
+        client: "SudaClient",
+        *,
+        region: str | None = None,
+        building: str | None = None,
+        room: str | None = None,
+    ) -> dict:
+        """按名称模糊解析 校区→楼栋→房间，返回 {region, building, room, account_no}。
+
+        消歧策略：跨层联合匹配——校区有歧义（如"独墅湖"）时，用楼栋在各候选校区
+        中继续匹配，只有唯一校区能匹配出该楼栋才通过；反之亦然。
+        room 也可以直接传 15 位 accountNo（此时其余参数可省略）。
+        解析失败抛 ValueError（带可读原因）。
+        """
+        room_q = (room or "").strip()
+        if room_q.isdigit() and len(room_q) >= 10:
+            return {
+                "region": {"id": "", "name": region or ""},
+                "building": {"id": "", "name": building or ""},
+                "room": {"id": room_q, "name": room_q},
+                "account_no": room_q,
+            }
+
+        regions = await client.get_regions()
+        region_cands = _candidates(regions, region, "校区")
+        if not region_cands:
+            raise _no_match_error(regions, region, "校区")
+
+        # 校区（可能多个）→ 楼栋联合匹配
+        building_hits: list[tuple[dict, list[dict]]] = []
+        building_err: ValueError | None = None
+        for r in region_cands:
+            buildings = await client.get_buildings(r["id"])
+            cands = _candidates(buildings, building, "楼栋")
+            if cands:
+                building_hits.append((r, cands))
+            elif building_err is None:
+                building_err = _no_match_error(buildings, building, "楼栋", context=r.get("name"))
+
+        if len(building_hits) > 1:
+            names = "、".join(r.get("name", "") for r, _ in building_hits)
+            raise ValueError(f"楼栋「{building}」在多个校区都存在（{names}），请指定校区")
+        if not building_hits:
+            raise building_err or ValueError(f"没有找到楼栋「{building}」")
+        r, b_cands = building_hits[0]
+        if len(b_cands) > 1:
+            raise ValueError(
+                f"楼栋「{building}」匹配到 {len(b_cands)} 个: "
+                + "、".join(str(it.get("name")) for it in b_cands[:6])
+                + "，请说得更具体"
+            )
+        b = b_cands[0]
+
+        rooms = await client.get_rooms(b["id"])
+        m = _pick(rooms, room_q, "房间")
+        return {
+            "region": r,
+            "building": b,
+            "room": m,
+            "account_no": str(m["id"]),
+        }
+
+
+def _candidates(items: list[dict], keyword: str, label: str) -> list[dict]:
+    """按关键词返回候选列表：全名一致 > id 一致 > 包含匹配。空关键词返回全部。"""
+    kw = (keyword or "").strip()
+    if not kw:
+        return list(items)
+    exact = [it for it in items if str(it.get("name", "")).strip() == kw]
+    if exact:
+        return exact
+    id_match = [it for it in items if str(it.get("id", "")) == kw]
+    if id_match:
+        return id_match
+    return [it for it in items if kw in str(it.get("name", ""))]
+
+
+def _no_match_error(items: list[dict], keyword: str, label: str, context: str = "") -> ValueError:
+    kw = (keyword or "").strip()
+    prefix = f"{context} " if context else ""
+    if not kw:
+        return ValueError(f"请提供{label}名称")
+    return ValueError(
+        f"{prefix}没有找到{label}「{kw}」，可选: "
+        + "、".join(str(it.get("name")) for it in items[:12])
+        + ("…" if len(items) > 12 else "")
+    )
+
+
+def _pick(items: list[dict], keyword: str, label: str) -> dict:
+    """在 [{id, name}] 里按关键词模糊匹配；唯一或前缀唯一才接受。"""
+    cands = _candidates(items, keyword, label)
+    if len(cands) == 1:
+        return cands[0]
+    if len(cands) > 1:
+        raise ValueError(
+            f"{label}「{keyword}」匹配到 {len(cands)} 个: "
+            + "、".join(str(it.get("name")) for it in cands[:6])
+            + "，请说得更具体"
+        )
+    raise _no_match_error(items, keyword, label)
+
 
 def _to_float(value: Any, default: float | None = None) -> float | None:
     try:
@@ -205,7 +343,3 @@ def _to_float(value: Any, default: float | None = None) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return default
-
-
-def now_ts() -> float:
-    return time.time()
