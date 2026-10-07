@@ -1,0 +1,10 @@
+{
+  "metadata": {
+    "display_name": "SUDA Dorm Electricity Monitor"
+  },
+  "pages": {
+    "dashboard": {
+      "title": "SUDA Elec Monitor"
+    }
+  }
+}

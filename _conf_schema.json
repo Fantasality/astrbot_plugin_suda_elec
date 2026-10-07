@@ -1,0 +1,50 @@
+{
+  "monitor_user_id": {
+    "type": "string",
+    "name": "虚拟账号 ID",
+    "description": "插件用于绑定宿舍的虚拟账号（openId 形态）。留空则首次启动自动生成 astrbot-elec-xxxxxxxx 并持久化。多宿舍绑定都挂在该账号下，无需真实身份认证。",
+    "default": ""
+  },
+  "interval_minutes": {
+    "type": "int",
+    "name": "查询间隔（分钟）",
+    "description": "定时轮询所有宿舍余额的间隔，最小 5 分钟。",
+    "default": 30
+  },
+  "threshold": {
+    "type": "float",
+    "name": "全局预警阈值（元）",
+    "description": "宿舍余额低于该值时触发预警。单宿舍可在 WebUI 中单独覆盖。",
+    "default": 20.0
+  },
+  "alert_enabled": {
+    "type": "bool",
+    "name": "启用低额预警",
+    "description": "关闭后仅记录余额，不推送任何预警。",
+    "default": true
+  },
+  "alert_sessions": {
+    "type": "string",
+    "name": "预警会话列表",
+    "description": "预警消息发送目标（unified_msg_origin），多个用英文逗号分隔。可在聊天里发送 /elec alert here 一键把当前会话填入。",
+    "default": ""
+  },
+  "alert_template": {
+    "type": "text",
+    "name": "预警消息模板",
+    "description": "支持占位符：{room} 宿舍名 / {location} 完整位置 / {balance} 当前余额 / {threshold} 阈值 / {time} 时间。",
+    "default": "⚠️ 宿舍电费预警\n{location}\n当前余额：{balance} 元（低于阈值 {threshold} 元）\n请尽快前往 ny.hq.suda.edu.cn/prepaid/ 充值！"
+  },
+  "alert_cooldown_minutes": {
+    "type": "int",
+    "name": "预警冷却（分钟）",
+    "description": "同一宿舍两次预警之间的最小间隔，防止持续轰炸。",
+    "default": 180
+  },
+  "max_records_per_room": {
+    "type": "int",
+    "name": "每宿舍最大记录数",
+    "description": "每间宿舍保留的余额历史记录上限，超出后丢弃最旧的。",
+    "default": 2000
+  }
+}

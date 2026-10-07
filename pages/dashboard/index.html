@@ -1,0 +1,960 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>苏大宿舍电费监控</title>
+<style>
+  :root, html[data-theme="light"] {
+    --bg: #f5f7fa;
+    --panel: #ffffff;
+    --panel-2: #f0f2f5;
+    --border: #e4e7ed;
+    --text: #1f2d3d;
+    --text-sub: #7f8b9b;
+    --accent: #3b82f6;
+    --accent-soft: rgba(59, 130, 246, .12);
+    --good: #10b981;
+    --good-soft: rgba(16, 185, 129, .12);
+    --bad: #ef4444;
+    --bad-soft: rgba(239, 68, 68, .12);
+    --warn: #f59e0b;
+    --warn-soft: rgba(245, 158, 11, .14);
+    --shadow: 0 1px 3px rgba(16, 24, 40, .06), 0 4px 14px rgba(16, 24, 40, .05);
+  }
+  html[data-theme="dark"] {
+    --bg: #14161a;
+    --panel: #1d2025;
+    --panel-2: #24272d;
+    --border: #2f333a;
+    --text: #e6e9ee;
+    --text-sub: #9aa3b0;
+    --accent: #60a5fa;
+    --accent-soft: rgba(96, 165, 250, .16);
+    --good: #34d399;
+    --good-soft: rgba(52, 211, 153, .16);
+    --bad: #f87171;
+    --bad-soft: rgba(248, 113, 113, .16);
+    --warn: #fbbf24;
+    --warn-soft: rgba(251, 191, 36, .18);
+    --shadow: 0 1px 3px rgba(0, 0, 0, .4), 0 6px 18px rgba(0, 0, 0, .35);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.55;
+    padding: 18px 20px 40px;
+    transition: background .3s, color .3s;
+  }
+  .header { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+  .header h1 { font-size: 18px; font-weight: 700; letter-spacing: .5px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; padding: 3px 10px; border-radius: 999px;
+    background: var(--panel-2); color: var(--text-sub); border: 1px solid var(--border);
+  }
+  .badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-sub); }
+  .badge.ok .dot { background: var(--good); box-shadow: 0 0 6px var(--good); }
+  .badge.err .dot { background: var(--bad); box-shadow: 0 0 6px var(--bad); }
+  .spacer { flex: 1; }
+  button {
+    font: inherit; cursor: pointer; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text);
+    padding: 7px 14px; border-radius: 8px; transition: all .18s ease;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
+  button:active { transform: translateY(0); }
+  button.primary {
+    background: linear-gradient(135deg, var(--accent), #6366f1);
+    color: #fff; border: none; box-shadow: 0 2px 8px var(--accent-soft);
+  }
+  button.primary:hover { filter: brightness(1.08); color: #fff; }
+  button.danger:hover { border-color: var(--bad); color: var(--bad); }
+  button.ghost { background: transparent; }
+  button:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; box-shadow: var(--shadow);
+    padding: 16px 18px; margin-bottom: 16px;
+    animation: rise .45s cubic-bezier(.22, 1, .36, 1) both;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  .card h2 { font-size: 15px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .card h2 .hint { font-size: 12px; color: var(--text-sub); font-weight: 400; }
+
+  /* 宿舍卡片网格 */
+  .rooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 14px; }
+  .room {
+    position: relative; overflow: hidden;
+    border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px 16px 10px; background: var(--panel-2);
+    transition: transform .2s ease, box-shadow .2s ease, border-color .2s;
+    animation: rise .5s cubic-bezier(.22, 1, .36, 1) both;
+  }
+  .room:hover { transform: translateY(-3px); box-shadow: var(--shadow); border-color: var(--accent); }
+  .room .loc { font-size: 13px; color: var(--text-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .room .row { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 2px; }
+  .room .balance { font-size: 30px; font-weight: 700; letter-spacing: -.5px; font-variant-numeric: tabular-nums; }
+  .room .balance.low { color: var(--bad); }
+  .room .delta { font-size: 12px; padding: 2px 8px; border-radius: 999px; }
+  .room .delta.up { color: var(--good); background: var(--good-soft); }
+  .room .delta.down { color: var(--bad); background: var(--bad-soft); }
+  .room .delta.flat { color: var(--text-sub); background: var(--panel); }
+  .room canvas.spark { width: 100%; height: 44px; display: block; margin-top: 4px; }
+  .room .meta { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 12px; color: var(--text-sub); }
+  .room .meta .th-edit { display: inline-flex; align-items: center; gap: 4px; }
+  .room input.th {
+    width: 62px; font: inherit; font-size: 12px; text-align: center;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 3px 4px;
+  }
+  .room input.th:focus { outline: none; border-color: var(--accent); }
+  .room .actions { position: absolute; top: 10px; right: 12px; display: flex; gap: 6px; opacity: 0; transition: opacity .2s; }
+  .room:hover .actions { opacity: 1; }
+  .room .actions button { padding: 3px 9px; font-size: 12px; border-radius: 6px; }
+  .room.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+
+  /* 图表 */
+  .chart-wrap { position: relative; }
+  .chart-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .chart-head select {
+    font: inherit; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+  }
+  .chart-head .range { display: flex; gap: 6px; }
+  .chart-head .range button.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+  #bigChart { width: 100%; height: 300px; display: block; }
+  .chart-empty {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--text-sub); font-size: 13px; pointer-events: none;
+  }
+  #tooltip {
+    position: absolute; pointer-events: none; opacity: 0; transition: opacity .15s;
+    background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow);
+    border-radius: 8px; padding: 6px 10px; font-size: 12px; white-space: nowrap; z-index: 5;
+  }
+  #tooltip b { font-variant-numeric: tabular-nums; }
+
+  /* 添加宿舍 */
+  .add-grid { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 10px; align-items: center; }
+  select.picker {
+    width: 100%; font: inherit; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px;
+  }
+  select.picker:focus { outline: none; border-color: var(--accent); }
+  .add-tip { margin-top: 10px; font-size: 12px; color: var(--text-sub); }
+  .count-note { font-size: 12px; color: var(--text-sub); }
+
+  /* 设置表单 */
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+  .field label { display: block; font-size: 12px; color: var(--text-sub); margin-bottom: 5px; }
+  .field input, .field textarea {
+    width: 100%; font: inherit; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  }
+  .field input:focus, .field textarea:focus { outline: none; border-color: var(--accent); }
+  .field textarea { min-height: 84px; resize: vertical; font-size: 13px; }
+  .field .vars { font-size: 11px; color: var(--text-sub); margin-top: 4px; }
+  .switch-row { display: flex; align-items: center; gap: 10px; }
+  .switch { position: relative; width: 42px; height: 24px; flex: none; cursor: pointer; }
+  .switch input { display: none; }
+  .switch .track {
+    position: absolute; inset: 0; border-radius: 999px; background: var(--panel);
+    border: 1px solid var(--border); transition: background .2s;
+  }
+  .switch .thumb {
+    position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%;
+    background: var(--text-sub); transition: all .22s cubic-bezier(.22, 1, .36, 1);
+  }
+  .switch input:checked + .track { background: var(--accent); border-color: var(--accent); }
+  .switch input:checked + .track .thumb { left: 21px; background: #fff; }
+  .settings-actions { margin-top: 14px; display: flex; gap: 10px; align-items: center; }
+
+  /* Toast */
+  #toasts { position: fixed; top: 16px; right: 16px; z-index: 99; display: flex; flex-direction: column; gap: 8px; }
+  #banner {
+    display: none; position: relative; margin-bottom: 14px;
+    background: var(--warn-soft); border: 1px solid var(--warn); border-radius: 10px;
+    padding: 10px 14px; font-size: 13px; color: var(--text); line-height: 1.6;
+  }
+  #banner code { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+  #banner .close { position: absolute; top: 6px; right: 8px; border: none; background: none; cursor: pointer; font-size: 14px; color: var(--text-sub); padding: 2px 6px; }  .toast {
+    background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    box-shadow: var(--shadow); border-radius: 8px; padding: 9px 14px; font-size: 13px;
+    animation: slideIn .3s cubic-bezier(.22, 1, .36, 1) both; max-width: 320px;
+  }
+  .toast.err { border-left-color: var(--bad); }
+  .toast.ok { border-left-color: var(--good); }
+  .toast.out { animation: slideOut .3s forwards; }
+  @keyframes slideIn { from { opacity: 0; transform: translateX(30px); } to { opacity: 1; transform: none; } }
+  @keyframes slideOut { to { opacity: 0; transform: translateX(30px); } }
+
+  .empty-guide { text-align: center; padding: 30px 10px; color: var(--text-sub); }
+  .empty-guide .big { font-size: 40px; margin-bottom: 8px; }
+  .loading-skeleton { height: 90px; border-radius: 12px; background: linear-gradient(90deg, var(--panel-2) 25%, var(--panel) 50%, var(--panel-2) 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; margin-bottom: 12px; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>⚡ 苏大宿舍电费监控</h1>
+    <span class="badge" id="pollBadge"><span class="dot"></span><span id="pollText">加载中…</span></span>
+    <span class="badge" id="userBadge" title="插件虚拟账号（免认证方案）">👤 虚拟账号</span>
+    <div class="spacer"></div>
+    <button class="primary" id="btnRefresh">立即刷新</button>
+  </div>
+
+  <div id="roomsCard" class="card" style="display:none">
+    <h2>🏠 监控中的宿舍 <span class="hint" id="roomCount"></span></h2>
+    <div class="rooms" id="roomsGrid"></div>
+  </div>
+
+  <div class="card" style="display:none" id="chartCard">
+    <h2>📈 余额变化曲线</h2>
+    <div class="chart-head">
+      <select id="roomSelect"></select>
+      <div class="range">
+        <button data-range="24">24h</button>
+        <button data-range="168" class="on">7d</button>
+        <button data-range="720">30d</button>
+        <button data-range="0">全部</button>
+      </div>
+      <span class="count-note" id="chartNote"></span>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="bigChart"></canvas>
+      <div class="chart-empty" id="chartEmpty" style="display:none">暂无数据，等待第一次轮询后即可看到曲线</div>
+      <div id="tooltip"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>➕ 添加宿舍 <span class="hint">免登录：直接从平台公开接口选择任意房间</span></h2>
+    <div class="add-grid">
+      <select class="picker" id="regionSel"><option value="">加载校区中…</option></select>
+      <select class="picker" id="buildingSel"><option value="">请先选择校区</option></select>
+      <select class="picker" id="roomSel"><option value="">请先选择楼栋</option></select>
+      <button class="primary" id="btnAdd">添加监控</button>
+    </div>
+    <div class="add-tip">添加后插件会自动在虚拟账号下绑定该房间并立即查询一次。可以添加任意多个宿舍（本楼 / 女朋友宿舍 / 整层都可以 😎）。</div>
+  </div>
+
+  <div class="card">
+    <h2>⚙️ 预警与轮询设置</h2>
+    <div class="form-grid">
+      <div class="field">
+        <label>查询间隔（分钟）</label>
+        <input type="number" id="cfgInterval" min="5" step="1">
+      </div>
+      <div class="field">
+        <label>全局预警阈值（元）</label>
+        <input type="number" id="cfgThreshold" step="0.1">
+      </div>
+      <div class="field">
+        <label>预警冷却（分钟）</label>
+        <input type="number" id="cfgCooldown" min="0" step="1">
+      </div>
+      <div class="field">
+        <label>启用低额预警</label>
+        <div class="switch-row">
+          <label class="switch"><input type="checkbox" id="cfgAlertEnabled"><span class="track"><span class="thumb"></span></span></label>
+          <span class="count-note" id="alertStateText"></span>
+        </div>
+      </div>
+      <div class="field" style="grid-column: 1 / -1;">
+        <label>预警会话（unified_msg_origin，逗号分隔；在聊天里发 /elec alert here 可一键添加）</label>
+        <input type="text" id="cfgSessions" placeholder="例如 aiocqio:GroupMessage:123456789">
+      </div>
+      <div class="field" style="grid-column: 1 / -1;">
+        <label>预警消息模板</label>
+        <textarea id="cfgTemplate"></textarea>
+        <div class="vars">可用占位符：{room} 宿舍名 · {location} 完整位置 · {balance} 余额 · {threshold} 阈值 · {time} 时间</div>
+      </div>
+    </div>
+    <div class="settings-actions">
+      <button class="primary" id="btnSaveSettings">保存设置</button>
+      <span class="count-note">保存后立即生效，无需重启。</span>
+    </div>
+  </div>
+
+  <div id="banner"><button class="close" onclick="this.parentElement.style.display='none'">✕</button><span id="bannerText"></span></div>
+
+  <div id="toasts"></div>
+
+<script>
+(function () {
+  "use strict";
+  var P = window.AstrBotPluginPage;
+  var state = {
+    overview: null,
+    records: {},        // account_no -> records[]
+    currentRoom: null,  // 当前大图宿舍
+    rangeHours: 168,
+    anim: {},           // chart 动画句柄
+  };
+
+  var PLUGIN = "astrbot_plugin_suda_elec";
+  var P = null; // 桥接就绪后指向 window.AstrBotPluginPage
+
+  function $(id) { return document.getElementById(id); }
+
+  function toast(msg, type) {
+    var box = document.createElement("div");
+    box.className = "toast " + (type || "");
+    box.textContent = msg;
+    $("toasts").appendChild(box);
+    setTimeout(function () {
+      box.classList.add("out");
+      setTimeout(function () { box.remove(); }, 320);
+    }, 3200);
+  }
+
+  function showBanner(html) {
+    $("bannerText").innerHTML = html;
+    $("banner").style.display = "block";
+  }
+  function hideBanner() { $("banner").style.display = "none"; }
+
+  /* ============================== API 层（桥接优先，直连兜底） ============================== */
+
+  function waitForBridge(timeoutMs) {
+    return new Promise(function (resolve) {
+      var t0 = Date.now();
+      (function check() {
+        if (window.AstrBotPluginPage) return resolve(window.AstrBotPluginPage);
+        if (Date.now() - t0 >= timeoutMs) return resolve(null);
+        setTimeout(check, 120);
+      })();
+    });
+  }
+
+  function unwrap(j) {
+    if (j === null || j === undefined) throw new Error("空响应");
+    if (typeof j.status === "string") {
+      if (j.status === "error") throw new Error(j.message || "请求失败");
+      if ("data" in j) return j.data;
+    }
+    return j;
+  }
+
+  function directFetch(method, ep, body) {
+    var url = "/api/v1/plugins/extensions/" + PLUGIN + "/" + ep.replace(/^\/+/, "");
+    var opt = { method: method, credentials: "same-origin", headers: {} };
+    if (body !== undefined) {
+      opt.headers["Content-Type"] = "application/json";
+      opt.body = JSON.stringify(body);
+    }
+    return fetch(url, opt).then(function (r) {
+      if (r.status === 401) throw new Error("未登录或无权限（401），请刷新 AstrBot 页面后重进");
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(unwrap);
+  }
+
+  function buildQuery(params) {
+    var qs = Object.keys(params || {}).map(function (k) {
+      return encodeURIComponent(k) + "=" + encodeURIComponent(params[k]);
+    }).join("&");
+    return qs ? "?" + qs : "";
+  }
+
+  function apiGet(ep, params) {
+    if (P) return P.apiGet(ep, params || {});
+    return directFetch("GET", ep + buildQuery(params));
+  }
+  function apiPost(ep, body) {
+    if (P) return P.apiPost(ep, body || {});
+    return directFetch("POST", ep, body);
+  }
+
+  function fmtTime(ts) {
+    if (!ts) return "—";
+    var d = new Date(ts * 1000);
+    return ("0" + d.getMonth() + 1).slice(-2) + "-" + ("0" + d.getDate()).slice(-2) +
+      " " + ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
+  }
+  function fmtBalance(v) {
+    if (v === null || v === undefined) return "—";
+    return (Math.round(v * 100) / 100).toFixed(2).replace(/\.00$/, "");
+  }
+
+  /* ============================== 概览与卡片 ============================== */
+
+  function renderOverview(ov) {
+    state.overview = ov;
+    var badge = $("pollBadge");
+    var rooms = ov.rooms || [];
+    $("roomCount").textContent = rooms.length ? ("共 " + rooms.length + " 间") : "";
+    $("userBadge").textContent = "👤 " + (ov.monitor_user_id || "未初始化");
+
+    if (ov.last_poll_ts) {
+      var ok = ov.last_poll_ok;
+      badge.className = "badge " + (ok === false ? "err" : "ok");
+      $("pollText").textContent =
+        (ok === false ? "上次轮询失败 · " : "上次轮询 ") + fmtTime(ov.last_poll_ts) +
+        (ov.last_error ? " · " + ov.last_error : "");
+    } else {
+      badge.className = "badge";
+      $("pollText").textContent = rooms.length ? "等待首次轮询…" : "未挂载宿舍";
+    }
+
+    var grid = $("roomsGrid");
+    grid.innerHTML = "";
+    $("roomsCard").style.display = rooms.length ? "" : "none";
+    $("chartCard").style.display = rooms.length ? "" : "none";
+
+    if (!rooms.length) return;
+
+    var select = $("roomSelect");
+    var prevSel = select.value;
+    select.innerHTML = "";
+    rooms.forEach(function (snap, i) {
+      var card = document.createElement("div");
+      card.className = "room";
+      card.style.animationDelay = (i * 60) + "ms";
+      card.dataset.account = snap.account_no;
+
+      var deltaHtml = '<span class="delta flat">—</span>';
+      if (snap.prev_balance !== null && snap.prev_balance !== undefined && snap.balance !== null && snap.balance !== undefined) {
+        var d = snap.balance - snap.prev_balance;
+        if (Math.abs(d) > 0.005) {
+          var up = d > 0;
+          deltaHtml = '<span class="delta ' + (up ? "up" : "down") + '">' + (up ? "▲ +" : "▼ ") + fmtBalance(d) + '</span>';
+        } else {
+          deltaHtml = '<span class="delta flat">持平</span>';
+        }
+      }
+      var low = snap.balance !== null && snap.balance < snap.threshold;
+      card.innerHTML =
+        '<div class="actions">' +
+          '<button data-act="view">曲线</button>' +
+          '<button data-act="del" class="danger">移除</button>' +
+        '</div>' +
+        '<div class="loc" title="' + snap.location + '">' + snap.location + '</div>' +
+        '<div class="row">' +
+          '<span class="balance ' + (low ? "low" : "") + '">¥<span class="num">--</span></span>' +
+          deltaHtml +
+        '</div>' +
+        '<canvas class="spark"></canvas>' +
+        '<div class="meta">' +
+          '<span class="th-edit">阈值 ¥<input class="th" type="number" step="0.1" value="' + snap.threshold + '"></span>' +
+          '<span>' + fmtTime(snap.last_ts) + '</span>' +
+        '</div>';
+      grid.appendChild(card);
+
+      // 数字滚动动画
+      animateNumber(card.querySelector(".num"), snap.balance);
+      if (low) {
+        var warn = document.createElement("div");
+        warn.style.cssText = "margin-top:6px;font-size:12px;color:var(--bad);background:var(--bad-soft);border-radius:6px;padding:3px 8px;display:inline-block;";
+        warn.textContent = "⚠️ 已低于阈值，记得充值";
+        card.appendChild(warn);
+      }
+
+      card.querySelector('[data-act="view"]').onclick = function () {
+        $("roomSelect").value = snap.account_no;
+        selectRoom(snap.account_no, true);
+      };
+      card.querySelector('[data-act="del"]').onclick = function () {
+        if (!confirm("确定移除 " + snap.location + " 的监控？")) return;
+        apiPost("rooms/remove", { account_no: snap.account_no })
+          .then(function () { toast("已移除 " + snap.location, "ok"); loadOverview(); })
+          .catch(function (e) { toast("移除失败：" + e.message, "err"); });
+      };
+      card.querySelector(".th").onchange = function (ev) {
+        var v = parseFloat(ev.target.value);
+        if (isNaN(v)) return;
+        apiPost("rooms/threshold", { account_no: snap.account_no, threshold: v })
+          .then(function () { toast("阈值已更新", "ok"); loadOverview(); })
+          .catch(function (e) { toast("保存失败：" + e.message, "err"); });
+      };
+
+      // sparkline
+      fetchRecords(snap.account_no, 48).then(function (recs) {
+        drawSpark(card.querySelector(".spark"), recs);
+      });
+
+      // 下拉选择
+      var opt = document.createElement("option");
+      opt.value = snap.account_no;
+      opt.textContent = snap.location || snap.account_no;
+      select.appendChild(opt);
+    });
+
+    var keep = rooms.some(function (r) { return r.account_no === prevSel; });
+    if (!state.currentRoom || !keep) {
+      selectRoom(rooms[0].account_no, false);
+    } else {
+      select.value = state.currentRoom;
+    }
+    select.onchange = function () { selectRoom(select.value, true); };
+  }
+
+  function animateNumber(el, target) {
+    if (target === null || target === undefined) { el.textContent = "--"; return; }
+    var start = performance.now(), dur = 800, from = target * 0.4;
+    function step(t) {
+      var p = Math.min(1, (t - start) / dur);
+      var eased = 1 - Math.pow(1 - p, 3);
+      var v = from + (target - from) * eased;
+      el.textContent = fmtBalance(v);
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  /* ============================== 记录获取 ============================== */
+
+  function fetchRecords(account, limit) {
+    if (state.records[account] && state.records[account]._limit === limit) {
+      return Promise.resolve(state.records[account]);
+    }
+    return apiGet("records", { account_no: account, limit: limit || 0 })
+      .then(function (data) {
+        var recs = (data && data.records) || [];
+        recs._limit = limit;
+        state.records[account] = recs;
+        return recs;
+      })
+      .catch(function () { return []; });
+  }
+
+  /* ============================== 迷你曲线 ============================== */
+
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+  function setupCanvas(canvas) {
+    var dpr = window.devicePixelRatio || 1;
+    var rect = canvas.getBoundingClientRect();
+    canvas.width = Math.max(1, rect.width * dpr);
+    canvas.height = Math.max(1, rect.height * dpr);
+    var ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx: ctx, w: rect.width, h: rect.height };
+  }
+
+  function drawSpark(canvas, records) {
+    var pts = records.filter(function (r) { return r && r.balance !== null && r.balance !== undefined; });
+    var env = setupCanvas(canvas);
+    var ctx = env.ctx, w = env.w, h = env.h;
+    ctx.clearRect(0, 0, w, h);
+    if (pts.length < 2) return;
+    var min = Infinity, max = -Infinity;
+    pts.forEach(function (r) { min = Math.min(min, r.balance); max = Math.max(max, r.balance); });
+    if (max - min < 0.01) { max += 0.5; min -= 0.5; }
+    var pad = 4;
+    var x = function (i) { return pad + (w - 2 * pad) * (i / (pts.length - 1)); };
+    var y = function (v) { return h - pad - (h - 2 * pad) * ((v - min) / (max - min)); };
+    var accent = cssVar("--accent");
+    ctx.beginPath();
+    pts.forEach(function (r, i) { i ? ctx.lineTo(x(i), y(r.balance)) : ctx.moveTo(x(0), y(r.balance)); });
+    var grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, accent + "33");
+    grad.addColorStop(1, accent + "00");
+    ctx.save();
+    ctx.lineTo(x(pts.length - 1), h); ctx.lineTo(x(0), h); ctx.closePath();
+    ctx.fillStyle = grad; ctx.fill();
+    ctx.restore();
+    ctx.beginPath();
+    pts.forEach(function (r, i) { i ? ctx.lineTo(x(i), y(r.balance)) : ctx.moveTo(x(0), y(r.balance)); });
+    ctx.strokeStyle = accent; ctx.lineWidth = 1.6; ctx.lineJoin = "round"; ctx.stroke();
+    var last = pts[pts.length - 1];
+    ctx.beginPath(); ctx.arc(x(pts.length - 1), y(last.balance), 2.4, 0, Math.PI * 2);
+    ctx.fillStyle = accent; ctx.fill();
+  }
+
+  /* ============================== 大图（带动画） ============================== */
+
+  function selectRoom(account, scroll) {
+    state.currentRoom = account;
+    document.querySelectorAll(".room").forEach(function (el) {
+      el.classList.toggle("selected", el.dataset.account === account);
+    });
+    fetchRecords(account, 1000).then(function (recs) {
+      drawBigChart(recs);
+    });
+  }
+
+  function filterByRange(records, hours) {
+    if (!hours) return records;
+    var cutoff = Date.now() / 1000 - hours * 3600;
+    var filtered = records.filter(function (r) { return r.ts >= cutoff; });
+    return filtered.length >= 2 ? filtered : records.slice(-2);
+  }
+
+  function drawBigChart(records) {
+    var canvas = $("bigChart");
+    var data = filterByRange(records.filter(function (r) { return r.balance !== null; }), state.rangeHours);
+    var empty = $("chartEmpty");
+    var note = $("chartNote");
+    if (data.length < 2) {
+      empty.style.display = data.length === 0 ? "" : "none";
+      note.textContent = records.length + " 条记录";
+      clearCanvas(canvas);
+      return;
+    }
+    empty.style.display = "none";
+    note.textContent = "共 " + records.length + " 条记录，展示最近 " + data.length + " 条";
+    cancelAnim();
+    var startT = performance.now(), dur = 900;
+    function frame(t) {
+      var p = Math.min(1, (t - startT) / dur);
+      renderChart(canvas, data, 1 - Math.pow(1 - p, 3));
+      if (p < 1) state.anim.raf = requestAnimationFrame(frame);
+    }
+    state.anim.raf = requestAnimationFrame(frame);
+  }
+
+  function cancelAnim() {
+    if (state.anim.raf) cancelAnimationFrame(state.anim.raf);
+    state.anim.raf = null;
+  }
+
+  function clearCanvas(canvas) {
+    cancelAnim();
+    var env = setupCanvas(canvas);
+    env.ctx.clearRect(0, 0, env.w, env.h);
+    state.anim.data = null;
+  }
+
+  function renderChart(canvas, data, progress) {
+    state.anim.data = data;
+    state.anim.progress = progress;
+    var env = setupCanvas(canvas);
+    var ctx = env.ctx, w = env.w, h = env.h;
+    ctx.clearRect(0, 0, w, h);
+
+    var padL = 46, padR = 16, padT = 18, padB = 26;
+    var cw = w - padL - padR, ch = h - padT - padB;
+    var min = Infinity, max = -Infinity;
+    data.forEach(function (r) { min = Math.min(min, r.balance); max = Math.max(max, r.balance); });
+    var span = Math.max(0.5, max - min);
+    min -= span * 0.12; max += span * 0.12;
+
+    var X = function (i) { return padL + cw * (i / (data.length - 1)); };
+    var Y = function (v) { return padT + ch * (1 - (v - min) / (max - min)); };
+
+    var accent = cssVar("--accent") || "#3b82f6";
+    var gridColor = (cssVar("--border") || "#e4e7ed") + "";
+    var textColor = cssVar("--text-sub") || "#888";
+
+    // 网格 + Y 轴刻度
+    ctx.font = "11px sans-serif";
+    ctx.fillStyle = textColor;
+    ctx.strokeStyle = gridColor;
+    ctx.lineWidth = 1;
+    for (var g = 0; g <= 4; g++) {
+      var gy = padT + ch * (g / 4);
+      ctx.globalAlpha = 0.7;
+      ctx.beginPath();
+      ctx.moveTo(padL, gy); ctx.lineTo(w - padR, gy);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      var val = max - (max - min) * (g / 4);
+      ctx.textAlign = "right";
+      ctx.fillText(val.toFixed(1), padL - 7, gy + 4);
+    }
+    // X 轴时间
+    var ticks = Math.min(6, data.length);
+    for (var t = 0; t < ticks; t++) {
+      var idx = Math.round(t * (data.length - 1) / Math.max(1, ticks - 1));
+      ctx.textAlign = t === 0 ? "left" : (t === ticks - 1 ? "right" : "center");
+      ctx.fillText(fmtTime(data[idx].ts), X(idx), h - 8);
+    }
+
+    // 折线剪裁进度（draw-in 动画）
+    var visibleCount = Math.max(2, Math.round(2 + (data.length - 2) * progress));
+    var tailProgress = 2 + (data.length - 2) * progress - visibleCount + 1; // 0..1 of next point
+
+    function pathUpTo(count, frac) {
+      ctx.beginPath();
+      for (var i = 0; i < count && i < data.length; i++) {
+        var px = X(i), py = Y(data[i].balance);
+        if (i === 0) ctx.moveTo(px, py);
+        else if (i === count - 1 && frac < 1 && i > 0) {
+          var prevX = X(i - 1), prevY = Y(data[i - 1].balance);
+          ctx.lineTo(prevX + (px - prevX) * frac, prevY + (py - prevY) * frac);
+        } else ctx.lineTo(px, py);
+      }
+    }
+
+    // 渐变填充
+    pathUpTo(visibleCount, tailProgress);
+    ctx.save();
+    ctx.lineTo(X(Math.min(visibleCount - 1, data.length - 1)), padT + ch);
+    ctx.lineTo(X(0), padT + ch);
+    ctx.closePath();
+    var grad = ctx.createLinearGradient(0, padT, 0, padT + ch);
+    grad.addColorStop(0, accent + "3d");
+    grad.addColorStop(0.7, accent + "12");
+    grad.addColorStop(1, accent + "00");
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.restore();
+
+    // 主线
+    pathUpTo(visibleCount, tailProgress);
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 2.2;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.shadowColor = accent + "44";
+    ctx.shadowBlur = 6;
+    ctx.shadowOffsetY = 2;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // 末端呼吸点
+    var li = Math.min(visibleCount - 1, data.length - 1);
+    var lx = X(li), ly = Y(data[li].balance);
+    if (tailProgress < 1 && li > 0) {
+      var plx = X(li - 1), ply = Y(data[li - 1].balance);
+      lx = plx + (lx - plx) * tailProgress;
+      ly = ply + (ly - ply) * tailProgress;
+    }
+    var pulse = 3 + Math.sin(performance.now() / 300) * 1.2;
+    ctx.beginPath(); ctx.arc(lx, ly, pulse + 3, 0, Math.PI * 2);
+    ctx.fillStyle = accent + "26"; ctx.fill();
+    ctx.beginPath(); ctx.arc(lx, ly, 3.4, 0, Math.PI * 2);
+    ctx.fillStyle = accent; ctx.fill();
+    ctx.beginPath(); ctx.arc(lx, ly, 1.6, 0, Math.PI * 2);
+    ctx.fillStyle = "#fff"; ctx.fill();
+  }
+
+  // 悬停提示
+  (function bindTooltip() {
+    var canvas = $("bigChart");
+    var tip = $("tooltip");
+    canvas.addEventListener("mousemove", function (ev) {
+      var data = state.anim.data;
+      if (!data || data.length < 2) return;
+      var rect = canvas.getBoundingClientRect();
+      var mx = ev.clientX - rect.left;
+      var padL = 46, padR = 16;
+      var cw = rect.width - padL - padR;
+      var rel = (mx - padL) / cw;
+      if (rel < -0.02 || rel > 1.02) { tip.style.opacity = 0; return; }
+      var idx = Math.round(rel * (data.length - 1));
+      idx = Math.max(0, Math.min(data.length - 1, idx));
+      var r = data[idx];
+      var prev = data[idx - 1];
+      var delta = prev ? (r.balance - prev.balance) : 0;
+      tip.innerHTML = "<div>" + fmtTime(r.ts) + "</div><b>¥ " + fmtBalance(r.balance) + "</b>" +
+        (prev ? ' <span style="color:' + (delta >= 0 ? "var(--good)" : "var(--bad)") + '">' + (delta >= 0 ? "▲" : "▼") + fmtBalance(Math.abs(delta)) + "</span>" : "");
+      tip.style.opacity = 1;
+      var tx = mx + 14;
+      if (tx + tip.offsetWidth > rect.width - 4) tx = mx - tip.offsetWidth - 14;
+      tip.style.left = tx + "px";
+      tip.style.top = (ev.clientY - rect.top - 10) + "px";
+      // 高亮竖线：重绘一帧带参考线
+      if (state.anim.raf) return;
+      renderChart(canvas, data, 1);
+      var env = setupCanvas(canvas);
+      var ctx = env.ctx;
+      var x = padL + cw * (idx / (data.length - 1));
+      ctx.strokeStyle = (cssVar("--border") || "#ddd");
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x, 18); ctx.lineTo(x, env.h - 26);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    });
+    canvas.addEventListener("mouseleave", function () { tip.style.opacity = 0; });
+  })();
+
+  /* ============================== 添加宿舍 ============================== */
+
+  function fillSelect(sel, items, placeholder) {
+    sel.innerHTML = "";
+    var opt0 = document.createElement("option");
+    opt0.value = "";
+    opt0.textContent = placeholder;
+    sel.appendChild(opt0);
+    items.forEach(function (it) {
+      var opt = document.createElement("option");
+      opt.value = it.id;
+      opt.textContent = it.name;
+      sel.appendChild(opt);
+    });
+  }
+
+  function loadRegions() {
+    apiGet("regions").then(function (data) {
+      fillSelect($("regionSel"), data || [], "选择校区");
+    }).catch(function (e) { toast("校区加载失败：" + e.message, "err"); });
+  }
+  $("regionSel").onchange = function () {
+    var v = this.value;
+    fillSelect($("buildingSel"), [], "加载中…");
+    fillSelect($("roomSel"), [], "请先选择楼栋");
+    if (!v) { fillSelect($("buildingSel"), [], "请先选择校区"); return; }
+    apiGet("buildings", { region_id: v }).then(function (data) {
+      fillSelect($("buildingSel"), data || [], "选择楼栋");
+    }).catch(function (e) { toast("楼栋加载失败：" + e.message, "err"); });
+  };
+  $("buildingSel").onchange = function () {
+    var v = this.value;
+    fillSelect($("roomSel"), [], "加载中…");
+    if (!v) { fillSelect($("roomSel"), [], "请先选择楼栋"); return; }
+    apiGet("rooms", { building_id: v }).then(function (data) {
+      fillSelect($("roomSel"), data || [], "选择房间");
+    }).catch(function (e) { toast("房间加载失败：" + e.message, "err"); });
+  };
+  $("btnAdd").onclick = function () {
+    var roomSel = $("roomSel");
+    var accountNo = roomSel.value;
+    if (!accountNo) { toast("请先选择到具体房间", "err"); return; }
+    var roomName = roomSel.options[roomSel.selectedIndex].textContent;
+    var bSel = $("buildingSel"), rSel = $("regionSel");
+    var loc = (rSel.options[rSel.selectedIndex] || {}).textContent + " " +
+              ((bSel.options[bSel.selectedIndex] || {}).textContent || "") + " " + roomName;
+    var btn = this;
+    btn.disabled = true;
+    apiPost("rooms/add", { account_no: accountNo, name: roomName, location: loc.trim() })
+      .then(function () {
+        toast("已添加 " + loc.trim(), "ok");
+        Object.keys(state.records).forEach(function (k) { delete state.records[k]; });
+        loadOverview();
+      })
+      .catch(function (e) { toast("添加失败：" + e.message, "err"); })
+      .finally(function () { btn.disabled = false; });
+  };
+
+  /* ============================== 设置 ============================== */
+
+  function fillSettings(ov) {
+    $("cfgInterval").value = ov.interval_minutes;
+    $("cfgThreshold").value = ov.threshold;
+    $("cfgCooldown").value = ov.alert_cooldown_minutes;
+    $("cfgAlertEnabled").checked = !!ov.alert_enabled;
+    $("cfgSessions").value = ov.alert_sessions || "";
+    $("cfgTemplate").value = ov.alert_template || "";
+    $("alertStateText").textContent = ov.alert_enabled ? "预警已开启" : "预警已关闭（仅记录）";
+  }
+
+  $("btnSaveSettings").onclick = function () {
+    var body = {
+      interval_minutes: parseInt($("cfgInterval").value, 10),
+      threshold: parseFloat($("cfgThreshold").value),
+      alert_cooldown_minutes: parseInt($("cfgCooldown").value, 10),
+      alert_enabled: $("cfgAlertEnabled").checked,
+      alert_sessions: $("cfgSessions").value.trim(),
+      alert_template: $("cfgTemplate").value,
+    };
+    if (isNaN(body.interval_minutes) || body.interval_minutes < 5) { toast("查询间隔至少 5 分钟", "err"); return; }
+    if (isNaN(body.threshold)) { toast("阈值必须是数字", "err"); return; }
+    apiPost("settings", body)
+      .then(function () { toast("设置已保存", "ok"); $("alertStateText").textContent = body.alert_enabled ? "预警已开启" : "预警已关闭（仅记录）"; })
+      .catch(function (e) { toast("保存失败：" + e.message, "err"); });
+  };
+
+  $("btnRefresh").onclick = function () {
+    var btn = this;
+    btn.disabled = true;
+    btn.textContent = "查询中…";
+    apiPost("refresh", {})
+      .then(function () {
+        toast("查询完成", "ok");
+        Object.keys(state.records).forEach(function (k) { delete state.records[k]; });
+        return loadOverview();
+      })
+      .catch(function (e) { toast("查询失败：" + e.message, "err"); })
+      .finally(function () { btn.disabled = false; btn.textContent = "立即刷新"; });
+  };
+
+  // 范围切换
+  document.querySelectorAll(".range button").forEach(function (btn) {
+    btn.onclick = function () {
+      document.querySelectorAll(".range button").forEach(function (b) { b.classList.remove("on"); });
+      btn.classList.add("on");
+      state.rangeHours = parseInt(btn.dataset.range, 10) || 0;
+      if (state.currentRoom) selectRoom(state.currentRoom, false);
+    };
+  });
+
+  /* ============================== 主流程 ============================== */
+
+  function loadOverview() {
+    return apiGet("overview")
+      .then(function (ov) {
+        renderOverview(ov);
+        fillSettings(ov);
+      })
+      .catch(function (e) {
+        toast("加载失败：" + e.message, "err");
+        $("pollText").textContent = "加载失败";
+      });
+  }
+
+  function initTheme() {
+    function apply(ctx) {
+      if (ctx && typeof ctx.isDark === "boolean") {
+        document.documentElement.setAttribute("data-theme", ctx.isDark ? "dark" : "light");
+        // 主题切换后重绘
+        if (state.currentRoom) selectRoom(state.currentRoom, false);
+      }
+    }
+    if (P && P.getContext) apply(P.getContext());
+    if (P && P.onContext) P.onContext(apply);
+  }
+
+  function boot() {
+    waitForBridge(6000).then(function (bridge) {
+      P = bridge;
+      var inDashboard = false;
+      try { inDashboard = window.parent !== window; } catch (e) { inDashboard = true; }
+      if (P) {
+        (P.ready ? P.ready().catch(function () {}) : Promise.resolve()).then(function () {
+          initTheme();
+          startPolling();
+        });
+        return;
+      }
+      // 桥接不可用 → 直连兜底（同源 cookie 鉴权）
+      if (!inDashboard && (location.protocol === "file:" || location.pathname.indexOf("/api/plugin/page/content/") !== 0)) {
+        showBanner(
+          "🛈 当前是<b>静态预览</b>环境，没有 AstrBot 运行环境。" +
+          "请打开 AstrBot WebUI（如 <code>http://127.0.0.1:15837</code>），点左侧边栏「<b>苏大电费监控</b>」进入本页面。"
+        );
+        $("pollText").textContent = "预览环境";
+        directFetch("GET", "overview").then(function (ov) {
+          hideBanner();
+          startPolling(ov);
+        }).catch(function () { /* 保持横幅提示即可 */ });
+        return;
+      }
+      showBanner("⚠️ 桥接脚本加载失败，正在尝试直连 API（同源 Cookie 鉴权）。若持续失败，请刷新 AstrBot 页面重试。");
+      directFetch("GET", "overview").then(function (ov) {
+        hideBanner();
+        startPolling(ov);
+      }).catch(function (e) {
+        showBanner("❌ 无法连接 AstrBot API：" + e.message + "<br>请确认已在 AstrBot WebUI 中打开本页面并已登录、插件已启用。");
+        $("pollText").textContent = "连接失败";
+      });
+    });
+  }
+
+  function startPolling(initialOverview) {
+    var chain = initialOverview !== undefined
+      ? Promise.resolve(initialOverview)
+      : loadOverview();
+    chain.then(function () { loadRegions(); });
+    setInterval(function () { loadOverview(); }, 60000);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
+})();
+</script>
+</body>
+</html>

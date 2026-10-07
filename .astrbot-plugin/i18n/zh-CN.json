@@ -1,0 +1,10 @@
+{
+  "metadata": {
+    "display_name": "苏大宿舍电费监控"
+  },
+  "pages": {
+    "dashboard": {
+      "title": "苏大电费监控"
+    }
+  }
+}

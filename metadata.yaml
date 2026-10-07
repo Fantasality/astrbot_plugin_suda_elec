@@ -1,0 +1,44 @@
+name: astrbot_plugin_suda_elec
+display_name: 苏大宿舍电费监控 · SUDA Dorm Electricity Monitor
+short_desc: 免登录监控苏州大学任意宿舍的剩余电费：多宿舍挂载、余额曲线、低额预警推送、Bot 查询工具。
+desc: |-
+  # 苏大宿舍电费监控（astrbot_plugin_suda_elec）
+
+  监控苏州大学宿舍水电缴费平台（https://ny.hq.suda.edu.cn/prepaid/）的剩余电费。
+
+  ## 特性
+
+  - **免统一身份认证**：通过平台公开的"校区→楼栋→房间"浏览接口 + 绑定接口，使用插件内置的
+    虚拟账号即可查询**任意校区、任意宿舍**的剩余电费，无需 Cookie / 密码 / 微信授权；
+  - **多宿舍挂载**：同时在 WebUI 里添加任意多个房间，一次轮询全部拉取余额；
+  - **定时轮询**：默认每 30 分钟查询一次（可配置），结果落盘为本地记录文件（JSON）；
+  - **余额曲线**：AstrBot WebUI 插件页面里查看每间宿舍的余额变化曲线（手写 Canvas 动画，
+    渐变填充、入场动画、悬停数值提示、自动适配深色/浅色主题）；
+  - **低额预警**：余额低于阈值时（支持全局阈值 + 单宿舍覆盖），自动向指定会话/群聊推送
+    预警消息，模板可自定义，带冷却时间防轰炸；
+  - **Bot 工具**：向 LLM 注册 `elec_query` / `elec_watchlist` 函数工具，对话即可查询
+    余额、宿舍名、位置、累计统计（最高/最低/24h 变化）等；
+  - **管理命令**：`/elec` 系列命令，支持立即查询、列表、阈值调整、把当前会话设为预警目标。
+
+  ## 快速开始
+
+  1. 安装并启用插件，打开 WebUI 侧边栏的「苏大宿舍电费监控」页面；
+  2. 在「添加宿舍」里依次选择 校区 → 楼栋 → 房间，点添加；
+  3. 在「预警设置」里填入阈值和预警会话（或在聊天里发 `/elec alert here`）；
+  4. 完成。之后每 30 分钟自动记录一次，余额曲线在页面里实时可看。
+
+  ## 隐私与安全
+
+  - 插件使用自生成的虚拟账号 ID（`astrbot-elec-xxxx`）向平台注册绑定关系，不涉及任何
+    个人统一身份认证凭据；
+  - 全部数据（记录/配置）保存在 AstrBot 数据目录 `plugin_data/astrbot_plugin_suda_elec/` 下。
+author: Fantasality
+version: 1.0.1
+repo: https://github.com/Fantasality/astrbot_plugin_suda_elec
+astrbot_version: ">=4.16.0"
+tags:
+  - suda
+  - electricity
+  - monitor
+  - dorm
+  - utility
